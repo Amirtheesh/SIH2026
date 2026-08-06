@@ -22,3 +22,7 @@ class ModelMetricsResponse(BaseModel):
     rmse: float
     mape: float
     last_trained: datetime
+
+class SystemHealthResponse(BaseModel):
+    scada: str
+    meteorological: str
