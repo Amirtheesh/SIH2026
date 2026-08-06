@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from typing import Any
 from app.services.prediction_service import prediction_service
+from app.services.weather_service import weather_service
 from app.api.deps import get_current_user
 
 router = APIRouter()
@@ -11,7 +12,16 @@ async def get_forecast(
     horizon: str = Query("24h"),
     current_user = Depends(get_current_user)
 ) -> Any:
-    return await prediction_service.predict_horizon(region, horizon)
+    # Feature 3: Weather-Aware Forecasting
+    # Pull live (or realistic typical) weather for this region and feed it
+    # into the ML model as input features.
+    weather = await weather_service.get_current_weather(region)
+    return await prediction_service.predict_horizon(
+        region,
+        horizon,
+        temperature_override=weather.get("temperature"),
+        humidity_override=weather.get("humidity"),
+    )
 
 from app.services.explain_service import explain_service
 from app.services.prediction_service import prediction_service
