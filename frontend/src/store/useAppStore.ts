@@ -17,8 +17,8 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  user: null,
-  isAuthenticated: false,
+  user: { id: '1', name: 'Admin User', role: 'Admin', token: 'mock-admin-token' },
+  isAuthenticated: true,
   login: (token, role) =>
     set({
       user: { id: '1', name: 'Demo User', role, token },

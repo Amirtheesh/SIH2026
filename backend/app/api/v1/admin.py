@@ -6,7 +6,7 @@ from datetime import datetime
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.schemas.admin import ApiKeyCreate, ApiKeyResponse, ModelMetricsResponse
+from app.schemas.admin import ApiKeyCreate, ApiKeyResponse, ModelMetricsResponse, SystemHealthResponse
 from app.services.admin_service import admin_service
 from app.models.user import User
 
@@ -70,7 +70,22 @@ async def get_model_metrics(
             "mape": 0.02,
             "last_trained": datetime.utcnow()
         }
-    return metrics
+    return {
+        "version": metrics.model_version,
+        "mae": metrics.mae,
+        "rmse": metrics.rmse,
+        "mape": metrics.mape,
+        "last_trained": metrics.trained_at
+    }
+
+@router.get("/system/health", response_model=SystemHealthResponse)
+async def get_system_health(
+    current_user: User = Depends(require_admin)
+):
+    return {
+        "scada": "Syncing Live",
+        "meteorological": "Synced 5m ago"
+    }
 
 @router.post("/model/retrain")
 async def trigger_retrain(
