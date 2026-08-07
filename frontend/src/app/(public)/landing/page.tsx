@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Activity } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export default function LandingPage() {
   const [currentDemand, setCurrentDemand] = useState(185420); // mock MW
@@ -38,16 +39,12 @@ export default function LandingPage() {
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 mb-16">
-          <Link href="/dashboard">
-            <Button size="lg" className="h-12 px-8 text-base font-semibold">
-              Enter Dashboard
-              <ArrowRight className="ml-2 h-5 w-5" />
-            </Button>
-          </Link>
-          <Link href="/login">
-            <Button size="lg" variant="outline" className="h-12 px-8 text-base font-semibold">
-              Operator Login
-            </Button>
+          <Link 
+            href="/operator" 
+            className={cn(buttonVariants({ size: "lg" }), "h-12 px-8 text-base font-semibold")}
+          >
+            Enter Dashboard
+            <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
         </div>
 
