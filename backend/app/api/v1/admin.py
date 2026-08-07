@@ -4,7 +4,8 @@ from typing import List, Dict, Any
 import uuid
 from datetime import datetime
 
-from app.api.deps import get_current_user
+# Import centralized role dependencies from deps.py
+from app.api.deps import require_admin
 from app.db.session import get_db
 from app.schemas.admin import ApiKeyCreate, ApiKeyResponse, ModelMetricsResponse, SystemHealthResponse
 from app.services.admin_service import admin_service
@@ -12,10 +13,9 @@ from app.models.user import User
 
 router = APIRouter()
 
-def require_admin(current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    return current_user
+# NOTE: require_admin is now imported from app.api.deps (not defined locally).
+# Every endpoint in this router uses require_admin — no endpoint is accessible
+# without a valid JWT belonging to a user with role='admin' in the database.
 
 @router.post("/keys", response_model=Dict[str, Any])
 async def create_api_key(
@@ -24,8 +24,6 @@ async def create_api_key(
     current_user: User = Depends(require_admin)
 ):
     db_key, raw_key = await admin_service.create_api_key(db, current_user.id, data)
-    
-    # We must return the raw key only once
     return {
         "id": db_key.id,
         "label": db_key.label,
@@ -39,9 +37,7 @@ async def list_api_keys(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
-    # The frontend expects a list of keys
     keys = await admin_service.list_api_keys(db, current_user.id)
-    # the frontend expects 'key' not 'key_hash' for the masked string in some implementations, but schemas matches 'key_hash'
     return keys
 
 @router.delete("/keys/{key_id}")
@@ -62,7 +58,6 @@ async def get_model_metrics(
 ):
     metrics = await admin_service.get_model_metrics(db)
     if not metrics:
-        # Return dummy if none exist
         return {
             "version": "v1.0.0 (mock)",
             "mae": 1.2,

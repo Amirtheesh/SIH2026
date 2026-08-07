@@ -22,6 +22,29 @@ const navigation = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const logout = useAppStore((state) => state.logout);
+  const user = useAppStore((state) => state.user);
+  const isAdmin = useAppStore((state) => state.isAdmin);
+
+  const ROLE_BADGE: Record<string, { label: string; class: string }> = {
+    admin: { label: "Admin", class: "bg-amber-500/15 text-amber-400 border-amber-500/25" },
+    operator: { label: "Operator", class: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25" },
+    public: { label: "Public", class: "bg-blue-500/15 text-blue-400 border-blue-500/25" },
+  };
+  const roleBadge = user?.role ? ROLE_BADGE[user.role] ?? ROLE_BADGE.public : null;
+
+  // Navigation — Admin link only shown to admins
+  const navigation = [
+    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Forecasts', href: '/forecast', icon: LineChart },
+    { name: 'Peak Analytics', href: '/peak-analytics', icon: Activity },
+    { name: 'Weather', href: '/weather', icon: CloudRain },
+    { name: 'Heat Map', href: '/heatmap', icon: Map },
+    { name: 'What-If Simulator', href: '/what-if', icon: Sliders },
+    { name: 'Alerts', href: '/alerts', icon: Bell },
+    { name: 'Events Impact', href: '/events', icon: Calendar },
+    ...(isAdmin() ? [{ name: 'Admin', href: '/admin', icon: ShieldAlert }] : []),
+    { name: 'Settings', href: '/settings', icon: Settings },
+  ];
 
   return (
     <div className="flex min-h-screen">
@@ -50,11 +73,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             );
           })}
         </nav>
-        <div className="p-4 border-t border-border">
-          <button 
+        <div className="p-4 border-t border-border space-y-3">
+          {/* User info + role badge */}
+          {user && (
+            <div className="px-3 py-2 rounded-md bg-white/[0.03] border border-white/[0.06] space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground truncate max-w-[140px]">{user.name}</span>
+                {roleBadge && (
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${roleBadge.class}`}>
+                    {roleBadge.label}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground/50 truncate">{user.email}</p>
+            </div>
+          )}
+          <button
             onClick={() => {
               logout();
-              window.location.href = '/landing';
+              window.location.href = '/login';
             }}
             className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-rose-500/10 hover:text-rose-500 transition-colors"
           >

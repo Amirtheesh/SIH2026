@@ -1,28 +1,51 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, RefreshCw, Activity, CheckCircle, Database, ArrowRight } from "lucide-react";
+import { ArrowLeft, RefreshCw, Activity, CheckCircle, Database, ArrowRight, ShieldOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function AdminDashboardPage() {
+  const router = useRouter();
   const user = useAppStore(state => state.user);
+  const logout = useAppStore(state => state.logout);
   const [isRetraining, setIsRetraining] = useState(false);
   const [lastTrained, setLastTrained] = useState("Loading...");
   const [metrics, setMetrics] = useState({ version: "v...", mae: 0, rmse: 0, mape: 0 });
   const [health, setHealth] = useState({ scada: "Loading...", meteorological: "Loading..." });
 
+  // Redirect to login if not authenticated at all
+  useEffect(() => {
+    if (user === null) {
+      router.replace("/admin-login");
+    }
+  }, [user, router]);
+
   const fetchData = useCallback(async () => {
-    if (user?.role !== "Admin") return;
+    if (user?.role !== "admin") return;
     try {
       const headers = { Authorization: `Bearer ${user?.token}` };
       const [metricsRes, healthRes] = await Promise.all([
-        fetch("http://localhost:8000/api/v1/admin/model/metrics", { headers }),
-        fetch("http://localhost:8000/api/v1/admin/system/health", { headers })
+        fetch(`${API_BASE}/api/v1/admin/model/metrics`, { headers }),
+        fetch(`${API_BASE}/api/v1/admin/system/health`, { headers })
       ]);
-      
+
+      // 401 = token expired/invalid → log out and redirect
+      if (metricsRes.status === 401 || healthRes.status === 401) {
+        logout();
+        router.replace("/admin-login");
+        return;
+      }
+      // 403 = logged in but not admin (should not happen if UI is correct)
+      if (metricsRes.status === 403 || healthRes.status === 403) {
+        return; // Access Denied UI is already shown below
+      }
+
       if (metricsRes.ok) {
         const data = await metricsRes.json();
         setMetrics(data);
@@ -34,7 +57,7 @@ export default function AdminDashboardPage() {
     } catch (e) {
       console.error(e);
     }
-  }, [user]);
+  }, [user, logout, router]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -44,12 +67,17 @@ export default function AdminDashboardPage() {
   const handleRetrain = async () => {
     setIsRetraining(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/admin/model/retrain", {
+      const res = await fetch(`${API_BASE}/api/v1/admin/model/retrain`, {
         method: "POST",
         headers: { Authorization: `Bearer ${user?.token}` }
       });
+      if (res.status === 401) {
+        logout();
+        router.replace("/admin-login");
+        return;
+      }
       if (res.ok) {
-        await fetchData(); // refresh data
+        await fetchData();
       }
     } catch (e) {
       console.error(e);
@@ -58,11 +86,21 @@ export default function AdminDashboardPage() {
     }
   };
 
-  if (user?.role !== "Admin") {
+  // Not authenticated: show nothing while redirect happens
+  if (!user) return null;
+
+  // Authenticated but not admin: show access denied (UI layer — backend enforces this too)
+  if (user.role !== "admin") {
     return (
       <div className="flex h-screen items-center justify-center flex-col gap-4">
+        <div className="p-4 bg-red-500/10 rounded-full">
+          <ShieldOff className="h-10 w-10 text-red-500" />
+        </div>
         <h2 className="text-2xl font-bold">Access Denied</h2>
-        <p className="text-muted-foreground">You need Administrator privileges to view this page.</p>
+        <p className="text-muted-foreground text-center max-w-sm">
+          You need <strong>Administrator</strong> privileges to view this page.<br />
+          Your current role is: <code className="bg-muted px-1 rounded">{user.role}</code>
+        </p>
         <Link href="/dashboard"><Button>Return to Dashboard</Button></Link>
       </div>
     );
