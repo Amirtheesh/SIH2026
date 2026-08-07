@@ -1,0 +1,92 @@
+{
+  "short_term_features": [
+    "temperature",
+    "humidity",
+    "wind_speed",
+    "rainfall",
+    "solar_radiation",
+    "hour",
+    "day_of_week",
+    "month",
+    "day_of_year",
+    "is_weekend",
+    "is_peak_hour",
+    "is_holiday",
+    "is_festival",
+    "is_sports_event",
+    "is_political_event",
+    "heat_index",
+    "cdd",
+    "load_lag_1h",
+    "load_lag_6h",
+    "load_lag_24h",
+    "load_lag_168h",
+    "rolling_mean_24h",
+    "rolling_std_24h",
+    "rolling_mean_168h",
+    "temp_humidity_interaction"
+  ],
+  "long_term_features": [
+    "temperature",
+    "humidity",
+    "wind_speed",
+    "rainfall",
+    "solar_radiation",
+    "hour",
+    "day_of_week",
+    "month",
+    "day_of_year",
+    "is_weekend",
+    "is_peak_hour",
+    "is_holiday",
+    "is_festival",
+    "is_sports_event",
+    "is_political_event",
+    "heat_index",
+    "cdd",
+    "load_lag_24h",
+    "load_lag_168h",
+    "rolling_mean_24h",
+    "rolling_std_24h",
+    "rolling_mean_168h",
+    "temp_humidity_interaction"
+  ],
+  "peak_features": [
+    "avg_temperature",
+    "max_temperature",
+    "avg_humidity",
+    "avg_wind_speed",
+    "total_rainfall",
+    "avg_solar",
+    "day_of_week",
+    "month",
+    "is_weekend",
+    "is_holiday",
+    "is_festival",
+    "is_sports_event",
+    "avg_cdd",
+    "max_cdd",
+    "prev_day_avg_load"
+  ],
+  "anomaly_context_features": [
+    "residual",
+    "temperature",
+    "hour",
+    "is_weekend",
+    "rolling_std_24h"
+  ],
+  "version": "v2",
+  "trained_at": "2026-08-06T17:48:43.752904",
+  "metrics": {
+    "short_term": {
+      "mae": 4971.09,
+      "rmse": 10605.74,
+      "mape": 3.62
+    },
+    "long_term": {
+      "mae": 4815.31,
+      "rmse": 10558.87,
+      "mape": 3.49
+    }
+  }
+}

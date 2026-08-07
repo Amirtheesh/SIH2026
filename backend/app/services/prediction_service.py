@@ -1,217 +1,445 @@
+"""
+Prediction Service
+===================
+Core business logic for all AI-powered forecasting features:
+  1. Multi-horizon demand forecasting (1h to 168h)
+  2. Peak demand prediction with severity classification
+  3. Weather-aware inference
+  4. Event-aware inference
+  5. Scenario-based what-if analysis (real model inference)
+"""
+
 import math
 import numpy as np
 import pandas as pd
+import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
-from app.ml.model_loader import model_loader, REGION_BASE_FALLBACK
-from app.ml.feature_pipeline import build_inference_row, INDIAN_HOLIDAYS
+logger = logging.getLogger(__name__)
 
-# ── Constants ──────────────────────────────────────────────────────────────────
 
-# Supported forecast horizons
-HORIZON_HOURS = {
-    "24h":  24,
-    "48h":  48,
-    "72h":  72,
-    "168h": 168,   # 7 days
-    "7d":   168,
+# Regional grid capacity limits (MW) — used for peak risk assessment
+GRID_CAPACITY = {
+    "northern": 65000,
+    "southern": 55000,
+    "western": 60000,
+    "eastern": 30000,
+    "national": 200000,
 }
 
-# Typical temperature for each region by month (for fallback when weather API unavailable)
-REGION_TEMP_PROFILE = {
-    "northern": [15, 18, 24, 32, 38, 40, 36, 34, 30, 25, 18, 14],
-    "southern": [26, 28, 30, 33, 35, 30, 28, 28, 28, 27, 25, 24],
-    "western":  [22, 24, 27, 32, 36, 33, 29, 28, 29, 28, 24, 21],
-    "eastern":  [18, 21, 27, 32, 35, 33, 30, 30, 29, 26, 21, 17],
-    "national": [20, 22, 27, 32, 37, 35, 31, 30, 29, 26, 21, 17],
+# Regional base load scaling factors (relative to national)
+REGION_SCALE = {
+    "northern": 0.27,
+    "southern": 0.20,
+    "western": 0.25,
+    "eastern": 0.12,
+    "national": 1.00,
 }
-
-
-def _get_typical_temp(region: str, month: int) -> float:
-    profile = REGION_TEMP_PROFILE.get(region.lower(), REGION_TEMP_PROFILE["national"])
-    return float(profile[month - 1])
-
-
-def _is_holiday(ts: pd.Timestamp) -> int:
-    return 1 if (ts.month, ts.day) in INDIAN_HOLIDAYS else 0
-
-
-def _generate_seed_loads(region: str, reference_ts: datetime, n_hours: int = 200) -> List[float]:
-    """
-    Generate a realistic sequence of past load values to seed the lag features.
-    
-    In production this would query the database. For now, we generate
-    synthetic values using the trained model's base load profile.
-    """
-    base = REGION_BASE_FALLBACK.get(region.lower(), 50000)
-    loads = []
-    for i in range(n_hours, 0, -1):
-        past_ts = reference_ts - timedelta(hours=i)
-        hour = past_ts.hour
-        month = past_ts.month
-        dow = past_ts.weekday()
-
-        # Diurnal pattern (same as training data generator)
-        morning = math.exp(-0.5 * ((hour - 9) / 2.5) ** 2)
-        evening = math.exp(-0.5 * ((hour - 20) / 2.0) ** 2)
-        night_trough = 0.35 if (0 <= hour <= 5) else 0.0
-        diurnal = 0.55 + 0.35 * (0.6 * evening + 0.4 * morning) - night_trough
-
-        # Seasonal
-        summer = math.exp(-0.5 * ((month - 5.5) / 1.8) ** 2)
-        seasonal = 0.85 + 0.25 * summer
-
-        # Weekend
-        weekend = 0.88 if dow >= 5 else 1.0
-
-        # Small noise
-        noise = (hash(str(past_ts)) % 200 - 100) / 10000.0
-
-        load = base * diurnal * seasonal * weekend * (1 + noise)
-        loads.append(max(load, base * 0.25))
-
-    return loads
 
 
 class PredictionService:
+    """
+    Unified prediction service that uses trained XGBoost models for inference.
+    Falls back to synthetic estimates if models are unavailable.
+    """
+
+    # --- 1. MULTI-HORIZON FORECASTING ---
 
     @staticmethod
     async def predict_horizon(
         region: str,
         horizon: str = "24h",
-        temperature_override: float = None,
-        humidity_override:    float = None,
-        is_holiday_override:  int   = None,
+        weather_override: Optional[Dict[str, float]] = None,
+        event_override: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
-        Runs multi-horizon electricity demand forecasting using the trained XGBoost model.
-        
-        Supports horizons: 24h, 48h, 72h, 168h (7 days).
-        
-        Returns one data point per hour with:
-          - ts:       ISO timestamp
-          - load_mw:  predicted demand in megawatts
-          - low:      lower confidence bound (95%)
-          - high:     upper confidence bound (95%)
+        Predicts electricity demand over a given horizon using the trained model.
+
+        Args:
+            region: Grid region (northern, southern, western, eastern, national)
+            horizon: Forecast horizon string e.g. '1h', '6h', '24h', '48h', '168h'
+            weather_override: Optional weather values to inject (for what-if analysis)
+            event_override: Optional event flags to inject (for what-if analysis)
+
+        Returns:
+            Dict with region, horizon metadata, and hourly forecast points.
         """
-        region = region.lower()
-        hours = HORIZON_HOURS.get(horizon, 24)
+        hours = 24
+        if horizon.endswith("h"):
+            hours = int(horizon[:-1])
 
-        # Get training metrics to set confidence band width
-        metrics = model_loader.get_metrics(region)
-        mape = metrics["mape_pct"] / 100.0 if metrics else 0.05
-        ci_width = max(mape, 0.03)   # at least ±3%
+        scale = REGION_SCALE.get(region.lower(), 1.0)
 
-        # Seed with realistic past loads (needed for lag features)
-        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
-        seed_loads = _generate_seed_loads(region, now, n_hours=200)
+        try:
+            from app.ml.model_loader import model_loader
+            from app.ml.feature_pipeline import create_features, SHORT_TERM_FEATURES, LONG_TERM_FEATURES
 
-        points = []
-        rolling_loads = list(seed_loads)   # grows as we predict each hour
-
-        for i in range(hours):
-            ts = pd.Timestamp(now + timedelta(hours=i + 1))
-
-            # Weather — use override if provided, else use typical value for this month
-            temperature = temperature_override if temperature_override is not None \
-                          else _get_typical_temp(region, ts.month)
-            humidity    = humidity_override if humidity_override is not None else 60.0
-            is_hol      = is_holiday_override if is_holiday_override is not None \
-                          else _is_holiday(ts)
-
-            # Build feature row
-            X = build_inference_row(
-                ts=ts,
-                temperature=temperature,
-                humidity=humidity,
-                is_holiday=is_hol,
-                recent_loads=rolling_loads,
+            # Select model based on horizon
+            model = model_loader.get_model_for_horizon(hours)
+            feature_cols = (
+                SHORT_TERM_FEATURES if hours <= 6 else LONG_TERM_FEATURES
             )
 
-            # Run model prediction
-            pred = model_loader.predict(region, X)
-            load_mw = float(pred[0])
-            load_mw = max(load_mw, REGION_BASE_FALLBACK[region] * 0.20)
+            now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
 
-            # Append the predicted value to rolling_loads for next step's lags
-            rolling_loads.append(load_mw)
+            # Build raw input records for each hour in the horizon
+            raw_data = []
+            for i in range(hours):
+                ts = now + timedelta(hours=i)
+                record: Dict[str, Any] = {
+                    "timestamp": ts.isoformat() + "Z",
+                }
 
-            points.append({
-                "ts":      ts.isoformat() + "Z",
-                "load_mw": round(load_mw),
-                "low":     round(load_mw * (1 - ci_width)),
-                "high":    round(load_mw * (1 + ci_width)),
-                "is_model_prediction": model_loader.is_trained(region),
-            })
+                # Inject weather (simulated or override)
+                if weather_override:
+                    record.update(weather_override)
+                else:
+                    # Simulate realistic weather based on time
+                    day_of_year = ts.timetuple().tm_yday
+                    hour = ts.hour
+                    seasonal_temp = 25.0 + 12.0 * math.sin(
+                        (day_of_year - 100) / 365.0 * 2 * math.pi
+                    )
+                    daily_temp = 5.0 * math.sin((hour - 14) / 24.0 * 2 * math.pi)
+                    record["temperature"] = round(seasonal_temp + daily_temp, 2)
+                    record["humidity"] = round(
+                        55.0 - 0.5 * (record["temperature"] - 25.0), 2
+                    )
+                    record["wind_speed"] = 4.0
+                    record["rainfall"] = 0.0
 
-        return {
-            "region":   region,
-            "horizon":  horizon,
-            "hours":    hours,
-            "model_trained": model_loader.is_trained(region),
-            "model_metrics": metrics,
-            "points":   points,
-        }
+                # Inject events (override or defaults)
+                if event_override:
+                    record.update(event_override)
+
+                raw_data.append(record)
+
+            # Generate simulated historical loads for lag features
+            # Use a simple pattern based on current time
+            historical_loads = []
+            for i in range(168):  # 1 week of history
+                past_ts = now - timedelta(hours=(168 - i))
+                hour_val = past_ts.hour
+                # Approximate load pattern
+                base = 150000.0 * scale
+                if 0 <= hour_val < 5:
+                    factor = 0.72
+                elif 5 <= hour_val < 9:
+                    factor = 0.85
+                elif 9 <= hour_val < 18:
+                    factor = 1.03
+                elif 18 <= hour_val < 22:
+                    factor = 1.15
+                else:
+                    factor = 0.95
+                historical_loads.append(base * factor + np.random.normal(0, 500))
+
+            # Run feature pipeline
+            features_df = create_features(raw_data, historical_loads=historical_loads)
+
+            # Select columns and run inference
+            inference_df = features_df[feature_cols].copy()
+            predictions = model.predict(inference_df)
+
+            # Scale predictions to region
+            predictions = predictions * scale
+
+            # Confidence band width depends on horizon
+            if hours <= 6:
+                band_pct = 0.05
+            elif hours <= 24:
+                band_pct = 0.08
+            elif hours <= 48:
+                band_pct = 0.12
+            else:
+                band_pct = 0.15
+
+            points = []
+            for i in range(hours):
+                load_mw = float(predictions[i])
+                high_mw = load_mw * (1 + band_pct)
+                low_mw = load_mw * (1 - band_pct)
+
+                points.append({
+                    "ts": raw_data[i]["timestamp"],
+                    "load_mw": round(load_mw),
+                    "low": round(low_mw),
+                    "high": round(high_mw),
+                })
+
+            return {
+                "region": region,
+                "horizon": horizon,
+                "model_version": model_loader.get_config().get("version", "v2"),
+                "confidence_band": f"±{int(band_pct * 100)}%",
+                "points": points,
+            }
+
+        except Exception as e:
+            logger.error(f"Model inference failed, falling back to synthetic: {e}")
+            return PredictionService._fallback_forecast(region, hours)
+
+    # --- 2. PEAK DEMAND PREDICTION ---
 
     @staticmethod
-    async def get_peak(region: str, horizon: str = "24h") -> Dict[str, Any]:
-        """Returns the predicted peak demand time and value within the forecast horizon."""
-        forecast = await PredictionService.predict_horizon(region, horizon)
-        peak_point = max(forecast["points"], key=lambda p: p["load_mw"])
-        return {
-            "region":        region,
-            "horizon":       horizon,
-            "peak_time":     peak_point["ts"],
-            "peak_load_mw":  peak_point["load_mw"],
-            "low":           peak_point["low"],
-            "high":          peak_point["high"],
-            "model_trained": forecast["model_trained"],
-        }
+    async def get_peak(region: str) -> Dict[str, Any]:
+        """
+        Predicts the daily peak demand, the hour it occurs, and a severity
+        classification based on regional grid capacity.
+        """
+        scale = REGION_SCALE.get(region.lower(), 1.0)
+        capacity = GRID_CAPACITY.get(region.lower(), 200000)
+
+        try:
+            from app.ml.model_loader import model_loader
+
+            peak_model = model_loader.get_peak_model()
+            peak_hour_model = model_loader.get_peak_hour_model()
+            peak_features = model_loader.get_peak_features()
+
+            if peak_model is None:
+                raise RuntimeError("Peak model not loaded")
+
+            now = datetime.utcnow()
+            day_of_year = now.timetuple().tm_yday
+
+            # Build daily aggregate features for peak prediction
+            seasonal_temp = 25.0 + 12.0 * math.sin(
+                (day_of_year - 100) / 365.0 * 2 * math.pi
+            )
+            daily_features = {
+                "avg_temperature": seasonal_temp,
+                "max_temperature": seasonal_temp + 5.0,
+                "avg_humidity": 55.0 - 0.5 * (seasonal_temp - 25.0),
+                "avg_wind_speed": 4.0,
+                "total_rainfall": 0.0,
+                "avg_solar": 500.0,
+                "day_of_week": now.weekday(),
+                "month": now.month,
+                "is_weekend": 1 if now.weekday() >= 5 else 0,
+                "is_holiday": 0,
+                "is_festival": 0,
+                "is_sports_event": 0,
+                "avg_cdd": max(0, seasonal_temp - 24.0),
+                "max_cdd": max(0, seasonal_temp + 5.0 - 24.0),
+                "prev_day_avg_load": 150000.0 * scale,
+            }
+
+            # Ensure feature order matches training
+            feature_df = pd.DataFrame([daily_features])
+            # Only use columns that exist in peak_features
+            available_cols = [c for c in peak_features if c in feature_df.columns]
+            if not available_cols:
+                raise RuntimeError("Peak feature columns mismatch")
+            feature_df = feature_df[available_cols]
+
+            peak_load = float(peak_model.predict(feature_df)[0]) * scale
+            
+            if peak_hour_model is not None:
+                peak_hour = int(round(float(peak_hour_model.predict(feature_df)[0])))
+                peak_hour = max(0, min(23, peak_hour))
+            else:
+                peak_hour = 20  # Default
+
+            # Severity classification
+            utilization = peak_load / capacity
+            if utilization < 0.70:
+                severity = "NORMAL"
+            elif utilization < 0.85:
+                severity = "ELEVATED"
+            elif utilization < 0.95:
+                severity = "CRITICAL"
+            else:
+                severity = "EMERGENCY"
+
+            reserve_margin = capacity - peak_load
+
+            peak_time = now.replace(hour=peak_hour, minute=0, second=0, microsecond=0)
+            if peak_time < now:
+                peak_time += timedelta(days=1)
+
+            return {
+                "region": region,
+                "peak_time": peak_time.isoformat() + "Z",
+                "peak_hour": peak_hour,
+                "peak_load_mw": round(peak_load),
+                "grid_capacity_mw": capacity,
+                "utilization_pct": round(utilization * 100, 1),
+                "reserve_margin_mw": round(reserve_margin),
+                "severity": severity,
+            }
+
+        except Exception as e:
+            logger.error(f"Peak prediction failed, using fallback: {e}")
+            # Fallback
+            forecast = await PredictionService.predict_horizon(region, "24h")
+            peak_point = max(forecast["points"], key=lambda p: p["load_mw"])
+            peak_load = peak_point["load_mw"]
+            utilization = peak_load / capacity
+
+            return {
+                "region": region,
+                "peak_time": peak_point["ts"],
+                "peak_hour": int(peak_point["ts"][11:13]),
+                "peak_load_mw": peak_load,
+                "grid_capacity_mw": capacity,
+                "utilization_pct": round(utilization * 100, 1),
+                "reserve_margin_mw": round(capacity - peak_load),
+                "severity": "NORMAL" if utilization < 0.70 else (
+                    "ELEVATED" if utilization < 0.85 else (
+                        "CRITICAL" if utilization < 0.95 else "EMERGENCY"
+                    )
+                ),
+            }
+
+    # --- 3. SCENARIO-BASED WHAT-IF ANALYSIS ---
 
     @staticmethod
     async def simulate_what_if(region: str, params: dict) -> dict:
         """
-        Scenario forecasting — reruns prediction with user-specified parameter overrides.
-        Returns original vs modified peak demand comparison.
+        Runs actual model inference with user-specified parameter overrides,
+        then compares against a baseline forecast.
+
+        Supported params:
+            temperature_offset: float (°C delta)
+            humidity_offset: float (% delta)
+            wind_speed: float (m/s)
+            rainfall: float (mm/h)
+            is_holiday: bool
+            is_festival: bool
+            is_sports_event: bool
+            scenario_name: str (preset name like 'heatwave', 'cold_wave', etc.)
+            duration_hours: int (how far to simulate)
         """
+        # Resolve scenario presets
+        scenario = params.get("scenario_name", "custom")
+        presets = {
+            "heatwave": {"temperature_offset": 5.0, "humidity_offset": -10.0},
+            "cold_wave": {"temperature_offset": -8.0, "humidity_offset": 10.0},
+            "monsoon": {"rainfall": 15.0, "humidity_offset": 25.0, "wind_speed": 12.0},
+            "major_holiday": {"is_holiday": True},
+            "festival": {"is_holiday": True, "is_festival": True},
+            "cricket_final": {"is_sports_event": True},
+            "industrial_shutdown": {"is_holiday": True},
+        }
+        if scenario in presets:
+            for k, v in presets[scenario].items():
+                params.setdefault(k, v)
+
+        duration = params.get("duration_hours", 24)
+        horizon = f"{duration}h"
+
+        # Build weather override
         temp_offset = params.get("temperature_offset", 0.0)
-        is_holiday  = params.get("is_holiday", False)
+        humidity_offset = params.get("humidity_offset", 0.0)
 
-        # Original forecast (no overrides)
-        original_forecast = await PredictionService.predict_horizon(region, "24h")
-        original_peak_pt  = max(original_forecast["points"], key=lambda p: p["load_mw"])
-        original_peak     = original_peak_pt["load_mw"]
+        weather_override = {}
+        if temp_offset != 0 or humidity_offset != 0:
+            # We'll compute base weather per-hour in predict_horizon,
+            # so we pass offsets via a marker and handle in the loop
+            now = datetime.utcnow()
+            day_of_year = now.timetuple().tm_yday
+            base_temp = 25.0 + 12.0 * math.sin((day_of_year - 100) / 365.0 * 2 * math.pi)
+            weather_override["temperature"] = round(base_temp + temp_offset, 2)
+            weather_override["humidity"] = round(
+                max(10, min(100, 55.0 - 0.5 * (base_temp - 25.0) + humidity_offset)), 2
+            )
 
-        # Modified forecast with overrides
-        # Get the typical temperature for the region this month and apply offset
-        now = datetime.utcnow()
-        typical_temp = _get_typical_temp(region, now.month)
-        new_temp = typical_temp + temp_offset
+        if "wind_speed" in params:
+            weather_override["wind_speed"] = params["wind_speed"]
+        if "rainfall" in params:
+            weather_override["rainfall"] = params["rainfall"]
 
-        modified_forecast = await PredictionService.predict_horizon(
-            region,
-            "24h",
-            temperature_override=new_temp,
-            humidity_override=None,
-            is_holiday_override=1 if is_holiday else 0,
+        # Build event override
+        event_override = {}
+        for key in ["is_holiday", "is_festival", "is_sports_event", "is_political_event"]:
+            if key in params:
+                event_override[key] = 1 if params[key] else 0
+
+        # Run baseline forecast (no overrides)
+        baseline = await PredictionService.predict_horizon(region, horizon)
+
+        # Run scenario forecast (with overrides)
+        scenario_result = await PredictionService.predict_horizon(
+            region, horizon,
+            weather_override=weather_override if weather_override else None,
+            event_override=event_override if event_override else None,
         )
-        modified_peak_pt = max(modified_forecast["points"], key=lambda p: p["load_mw"])
-        new_peak = modified_peak_pt["load_mw"]
 
-        delta = new_peak - original_peak
+        # Compare
+        baseline_peak = max(p["load_mw"] for p in baseline["points"])
+        scenario_peak = max(p["load_mw"] for p in scenario_result["points"])
+
+        baseline_avg = sum(p["load_mw"] for p in baseline["points"]) / len(baseline["points"])
+        scenario_avg = sum(p["load_mw"] for p in scenario_result["points"]) / len(scenario_result["points"])
+
+        delta_peak = scenario_peak - baseline_peak
+        delta_avg = scenario_avg - baseline_avg
+
+        # Build hourly comparison
+        comparison_points = []
+        for b, s in zip(baseline["points"], scenario_result["points"]):
+            comparison_points.append({
+                "ts": b["ts"],
+                "baseline_mw": b["load_mw"],
+                "scenario_mw": s["load_mw"],
+                "delta_mw": s["load_mw"] - b["load_mw"],
+            })
 
         return {
-            "region":              region,
-            "original_peak_mw":   original_peak,
-            "new_peak_mw":        new_peak,
-            "delta_mw":           round(delta),
-            "delta_percentage":   round((delta / original_peak) * 100, 2),
-            "parameters_applied": {
-                "temperature_offset": temp_offset,
-                "is_holiday": is_holiday,
-            },
-            "model_trained": original_forecast["model_trained"],
+            "scenario_name": scenario,
+            "region": region,
+            "duration_hours": duration,
+            "original_peak_mw": baseline_peak,
+            "new_peak_mw": scenario_peak,
+            "delta_mw": delta_peak,
+            "delta_percentage": round(
+                ((scenario_peak - baseline_peak) / baseline_peak) * 100, 2
+            ) if baseline_peak > 0 else 0,
+            "avg_baseline_mw": round(baseline_avg),
+            "avg_scenario_mw": round(scenario_avg),
+            "comparison": comparison_points,
+        }
+
+    # --- FALLBACK (synthetic) ---
+
+    @staticmethod
+    def _fallback_forecast(region: str, hours: int) -> Dict[str, Any]:
+        """Generates synthetic forecast when models are unavailable."""
+        base_load_map = {
+            "northern": 40000,
+            "southern": 25000,
+            "western": 35000,
+            "eastern": 18000,
+            "national": 150000,
+        }
+
+        base_load = base_load_map.get(region.lower(), 50000)
+        points = []
+        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+
+        for i in range(hours):
+            ts = now + timedelta(hours=i)
+            hour_factor = math.sin((ts.hour - 7) / 24.0 * math.pi * 2)
+            noise = (hash(str(ts)) % 1000) / 1000.0
+            load = base_load + (base_load * 0.2 * hour_factor) + (
+                base_load * 0.02 * noise
+            )
+
+            points.append({
+                "ts": ts.isoformat() + "Z",
+                "load_mw": round(load),
+                "low": round(load * 0.92),
+                "high": round(load * 1.08),
+            })
+
+        return {
+            "region": region,
+            "horizon": f"{hours}h",
+            "model_version": "fallback",
+            "confidence_band": "±8%",
+            "points": points,
         }
 
 

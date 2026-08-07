@@ -14,4 +14,7 @@ xgboost
 scikit-learn
 shap
 pandas
+numpy
 python-multipart
+joblib
+aiosqlite

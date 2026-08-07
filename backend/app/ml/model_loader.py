@@ -1,91 +1,159 @@
+"""
+Model Loader
+=============
+Loads all trained model artifacts from disk and provides them to services.
+
+Models:
+  - Short-term forecast (1-6h)
+  - Long-term forecast (24h-168h)
+  - Peak demand predictor
+  - Peak hour predictor
+  - Anomaly detector (Isolation Forest)
+  - Legacy v1 models (backward compatibility)
+"""
+
 import joblib
 import os
 import json
-import numpy as np
-from typing import Optional
+import logging
+from typing import Optional, Dict, Any
 
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
-
-# Base loads used as fallback if a model hasn't been trained yet
-REGION_BASE_FALLBACK = {
-    "northern": 55000,
-    "southern": 48000,
-    "western":  45000,
-    "eastern":  22000,
-    "national": 170000,
-}
+logger = logging.getLogger(__name__)
 
 
 class ModelLoader:
-    """
-    Loads and caches trained XGBoost models for each region.
-    
-    Models are saved by train.py as:
-        app/ml/models/xgboost_{region}_v1.pkl
-    
-    Usage:
-        loader = ModelLoader()
-        model  = loader.get_model("northern")
-        preds  = model.predict(X_df)
-    """
-
-    def __init__(self):
-        self._cache: dict = {}      # region -> xgb model
-        self._metrics: dict = {}    # region -> training metrics
-
-    def _load_model(self, region: str):
-        """Load model from disk into the in-memory cache."""
-        path = os.path.join(MODELS_DIR, f"xgboost_{region}_v1.pkl")
-        if os.path.exists(path):
-            self._cache[region] = joblib.load(path)
-            # Also load metrics if available
-            metrics_path = os.path.join(MODELS_DIR, f"metrics_{region}_v1.json")
-            if os.path.exists(metrics_path):
-                with open(metrics_path) as f:
-                    self._metrics[region] = json.load(f)
-            print(f"[ModelLoader] Loaded model for region: {region}")
-        else:
-            # Model not yet trained — store None so we know to use fallback
-            self._cache[region] = None
-            print(f"[ModelLoader] WARNING: No trained model found for '{region}'. "
-                  f"Run: docker exec -it sih2026-api-1 python app/ml/train.py")
-
-    def get_model(self, region: str):
-        """Returns the XGBoost model for a region (loads from disk if needed)."""
-        region = region.lower()
-        if region not in self._cache:
-            self._load_model(region)
-        return self._cache.get(region)
-
-    def is_trained(self, region: str) -> bool:
-        """Returns True if a trained model exists for this region."""
-        return self.get_model(region) is not None
-
-    def get_metrics(self, region: str) -> Optional[dict]:
-        """Returns the training metrics for a region, or None if not trained."""
-        region = region.lower()
-        if region not in self._metrics:
-            metrics_path = os.path.join(MODELS_DIR, f"metrics_{region}_v1.json")
-            if os.path.exists(metrics_path):
-                with open(metrics_path) as f:
-                    self._metrics[region] = json.load(f)
-        return self._metrics.get(region)
-
-    def predict(self, region: str, X) -> np.ndarray:
-        """
-        Run inference with the model for a region.
+    def __init__(self, models_dir: str = "app/ml/models"):
+        self.models_dir = models_dir
         
-        If the model isn't trained yet, returns a mock value based on
-        region base load so the API doesn't crash during development.
-        """
-        model = self.get_model(region)
-        if model is not None:
-            return model.predict(X)
+        # Forecast models
+        self.model_short_term = None
+        self.model_long_term = None
+        
+        # Peak models
+        self.model_peak = None
+        self.model_peak_hour = None
+        
+        # Anomaly detection
+        self.model_anomaly = None
+        
+        # Legacy (backward compat)
+        self.model_point = None
+        
+        # Config
+        self.config: Dict[str, Any] = {}
+        self._loaded = False
+
+    def load(self):
+        """Loads all model artifacts from disk."""
+        if self._loaded:
+            return
+            
+        paths = {
+            "short_term": ("xgboost_short_term.pkl", "model_short_term"),
+            "long_term": ("xgboost_long_term.pkl", "model_long_term"),
+            "peak": ("xgboost_peak.pkl", "model_peak"),
+            "peak_hour": ("xgboost_peak_hour.pkl", "model_peak_hour"),
+            "anomaly": ("isolation_forest.pkl", "model_anomaly"),
+            "legacy_point": ("xgboost_v1.pkl", "model_point"),
+        }
+
+        for name, (filename, attr) in paths.items():
+            filepath = os.path.join(self.models_dir, filename)
+            if os.path.exists(filepath):
+                setattr(self, attr, joblib.load(filepath))
+                logger.info(f"Loaded {name} model from {filepath}")
+            else:
+                logger.warning(f"{name} model not found at {filepath}")
+
+        # Load config
+        config_path = os.path.join(self.models_dir, "features.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                self.config = json.load(f)
+            logger.info(f"Loaded model config (version: {self.config.get('version', 'unknown')})")
+        
+        self._loaded = True
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            self.load()
+
+    # --- Forecast Models ---
+    
+    def get_short_term_model(self):
+        """Returns the short-term (1-6h) forecast model."""
+        self._ensure_loaded()
+        if self.model_short_term is None:
+            raise RuntimeError("Short-term model not loaded. Run train_dummy_model.py first.")
+        return self.model_short_term
+
+    def get_long_term_model(self):
+        """Returns the long-term (24-168h) forecast model."""
+        self._ensure_loaded()
+        if self.model_long_term is None:
+            raise RuntimeError("Long-term model not loaded. Run train_dummy_model.py first.")
+        return self.model_long_term
+
+    def get_model_for_horizon(self, hours: int):
+        """Returns the appropriate model based on forecast horizon."""
+        if hours <= 6:
+            return self.get_short_term_model()
         else:
-            # Fallback: return region base load as a flat array
-            base = REGION_BASE_FALLBACK.get(region.lower(), 50000)
-            return np.full(len(X), base, dtype=float)
+            return self.get_long_term_model()
+
+    def get_features_for_horizon(self, hours: int):
+        """Returns the feature column list for the given horizon."""
+        self._ensure_loaded()
+        if hours <= 6:
+            return self.config.get("short_term_features", [])
+        else:
+            return self.config.get("long_term_features", [])
+
+    # --- Peak Models ---
+    
+    def get_peak_model(self):
+        """Returns the daily peak demand prediction model."""
+        self._ensure_loaded()
+        return self.model_peak
+
+    def get_peak_hour_model(self):
+        """Returns the peak hour prediction model."""
+        self._ensure_loaded()
+        return self.model_peak_hour
+
+    def get_peak_features(self):
+        """Returns the feature columns for peak prediction."""
+        self._ensure_loaded()
+        return self.config.get("peak_features", [])
+
+    # --- Anomaly Model ---
+    
+    def get_anomaly_model(self):
+        """Returns the Isolation Forest anomaly detection model."""
+        self._ensure_loaded()
+        return self.model_anomaly
+
+    # --- Legacy ---
+    
+    def get_model(self):
+        """Legacy method: returns point forecast model (backward compat)."""
+        self._ensure_loaded()
+        if self.model_point is None:
+            # Fall back to short-term model
+            return self.get_short_term_model()
+        return self.model_point
+
+    # --- Config ---
+    
+    def get_config(self) -> Dict[str, Any]:
+        """Returns the full model configuration including metrics."""
+        self._ensure_loaded()
+        return self.config
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Returns training metrics for all models."""
+        self._ensure_loaded()
+        return self.config.get("metrics", {})
 
 
-# Singleton — imported by prediction_service.py
 model_loader = ModelLoader()
