@@ -63,7 +63,7 @@ export default function AlertsPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-amber-400">
               <ShieldAlert className="h-5 w-5" />
-              Feature 6: Peak Risk Alert Assessment ({risk.current_risk_level} Status)
+              Peak Risk Alert Assessment ({risk.current_risk_level} Status)
             </CardTitle>
             <CardDescription>
               Capacity Threshold: {(risk.grid_capacity_mw / 1000).toFixed(0)}k MW | Time to Critical: {risk.time_to_critical_hours !== null ? `${risk.time_to_critical_hours}h` : "None"}

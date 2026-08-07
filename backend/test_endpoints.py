@@ -27,7 +27,7 @@ test("Multi-Horizon Forecast (6h)", f"{BASE}/forecast/national?horizon=6h")
 # Feature 2: Peak Demand Prediction
 test("Peak Demand Prediction", f"{BASE}/forecast/national/peak")
 
-# Feature 3: Weather-Aware (shown via explain)
+# Weather-Aware (shown via explain)
 test("SHAP/Feature Explanation", f"{BASE}/forecast/national/explain?horizon=24h")
 
 # Feature 5: Anomaly Detection

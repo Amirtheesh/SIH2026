@@ -53,7 +53,7 @@ export default function PeakAnalyticsPage() {
     <div className="flex-1 space-y-6 p-8 pt-6">
       <div className="flex items-center justify-between space-y-2">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Feature 9: Peak Demand & Model Analytics</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Peak Demand & Model Analytics</h2>
           <p className="text-muted-foreground text-sm">
             Model accuracy metrics, XGBoost feature importance rankings, and hourly load distributions
           </p>
