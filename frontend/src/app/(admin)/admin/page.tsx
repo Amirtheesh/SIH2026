@@ -1,31 +1,106 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, RefreshCw, Activity, CheckCircle, Database, ArrowRight } from "lucide-react";
+import { ArrowLeft, RefreshCw, Activity, CheckCircle, Database, ArrowRight, ShieldOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
 
-export default function AdminDashboardPage() {
-  const user = useAppStore(state => state.user);
-  const [isRetraining, setIsRetraining] = useState(false);
-  const [lastTrained, setLastTrained] = useState("Today, 04:00 AM");
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-  const handleRetrain = () => {
+export default function AdminDashboardPage() {
+  const router = useRouter();
+  const user = useAppStore(state => state.user);
+  const logout = useAppStore(state => state.logout);
+  const [isRetraining, setIsRetraining] = useState(false);
+  const [lastTrained, setLastTrained] = useState("Loading...");
+  const [metrics, setMetrics] = useState({ version: "v...", mae: 0, rmse: 0, mape: 0 });
+  const [health, setHealth] = useState({ scada: "Loading...", meteorological: "Loading..." });
+
+  // Redirect to login if not authenticated at all
+  useEffect(() => {
+    if (user === null) {
+      router.replace("/admin-login");
+    }
+  }, [user, router]);
+
+  const fetchData = useCallback(async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const headers = { Authorization: `Bearer ${user?.token}` };
+      const [metricsRes, healthRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/admin/model/metrics`, { headers }),
+        fetch(`${API_BASE}/api/v1/admin/system/health`, { headers })
+      ]);
+
+      // 401 = token expired/invalid → log out and redirect
+      if (metricsRes.status === 401 || healthRes.status === 401) {
+        logout();
+        router.replace("/admin-login");
+        return;
+      }
+      // 403 = logged in but not admin (should not happen if UI is correct)
+      if (metricsRes.status === 403 || healthRes.status === 403) {
+        return; // Access Denied UI is already shown below
+      }
+
+      if (metricsRes.ok) {
+        const data = await metricsRes.json();
+        setMetrics(data);
+        setLastTrained(new Date(data.last_trained).toLocaleString());
+      }
+      if (healthRes.ok) {
+        setHealth(await healthRes.json());
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [user, logout, router]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchData();
+  }, [fetchData]);
+
+  const handleRetrain = async () => {
     setIsRetraining(true);
-    // Mock API POST /api/v1/admin/retrain
-    setTimeout(() => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/model/retrain`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.status === 401) {
+        logout();
+        router.replace("/admin-login");
+        return;
+      }
+      if (res.ok) {
+        await fetchData();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
       setIsRetraining(false);
-      setLastTrained("Just now");
-    }, 2000);
+    }
   };
 
-  if (user?.role !== "Admin") {
+  // Not authenticated: show nothing while redirect happens
+  if (!user) return null;
+
+  // Authenticated but not admin: show access denied (UI layer — backend enforces this too)
+  if (user.role !== "admin") {
     return (
       <div className="flex h-screen items-center justify-center flex-col gap-4">
+        <div className="p-4 bg-red-500/10 rounded-full">
+          <ShieldOff className="h-10 w-10 text-red-500" />
+        </div>
         <h2 className="text-2xl font-bold">Access Denied</h2>
-        <p className="text-muted-foreground">You need Administrator privileges to view this page.</p>
+        <p className="text-muted-foreground text-center max-w-sm">
+          You need <strong>Administrator</strong> privileges to view this page.<br />
+          Your current role is: <code className="bg-muted px-1 rounded">{user.role}</code>
+        </p>
         <Link href="/dashboard"><Button>Return to Dashboard</Button></Link>
       </div>
     );
@@ -55,17 +130,17 @@ export default function AdminDashboardPage() {
               <div className="grid grid-cols-3 gap-4">
                 <div className="p-4 rounded-lg bg-background/50 border border-border/50 text-center">
                   <div className="text-sm font-medium text-muted-foreground mb-1">MAE</div>
-                  <div className="text-2xl font-bold text-blue-400">1.24%</div>
+                  <div className="text-2xl font-bold text-blue-400">{metrics.mae}%</div>
                   <div className="text-xs text-emerald-500 mt-1">Acceptable</div>
                 </div>
                 <div className="p-4 rounded-lg bg-background/50 border border-border/50 text-center">
                   <div className="text-sm font-medium text-muted-foreground mb-1">RMSE</div>
-                  <div className="text-2xl font-bold text-amber-400">2.18%</div>
+                  <div className="text-2xl font-bold text-amber-400">{metrics.rmse}%</div>
                   <div className="text-xs text-emerald-500 mt-1">Acceptable</div>
                 </div>
                 <div className="p-4 rounded-lg bg-background/50 border border-border/50 text-center">
                   <div className="text-sm font-medium text-muted-foreground mb-1">MAPE</div>
-                  <div className="text-2xl font-bold text-emerald-400">0.95%</div>
+                  <div className="text-2xl font-bold text-emerald-400">{metrics.mape}%</div>
                   <div className="text-xs text-emerald-500 mt-1">Excellent</div>
                 </div>
               </div>
@@ -82,14 +157,14 @@ export default function AdminDashboardPage() {
                   <Database className="h-5 w-5 text-emerald-500" />
                   <span className="font-medium">SCADA Grid Telemetry</span>
                 </div>
-                <span className="text-sm text-emerald-500 flex items-center"><CheckCircle className="h-4 w-4 mr-1"/> Syncing Live</span>
+                <span className="text-sm text-emerald-500 flex items-center"><CheckCircle className="h-4 w-4 mr-1"/> {health.scada}</span>
               </div>
               <div className="flex items-center justify-between p-3 rounded bg-background/50 border border-border/50">
                 <div className="flex items-center gap-3">
                   <Database className="h-5 w-5 text-emerald-500" />
                   <span className="font-medium">Meteorological Data API</span>
                 </div>
-                <span className="text-sm text-emerald-500 flex items-center"><CheckCircle className="h-4 w-4 mr-1"/> Synced 5m ago</span>
+                <span className="text-sm text-emerald-500 flex items-center"><CheckCircle className="h-4 w-4 mr-1"/> {health.meteorological}</span>
               </div>
             </CardContent>
           </Card>
@@ -106,7 +181,7 @@ export default function AdminDashboardPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="text-sm text-muted-foreground">
-                <p className="mb-2"><strong>Model Version:</strong> v2.4.1 (XGBoost Ensemble)</p>
+                <p className="mb-2"><strong>Model Version:</strong> {metrics.version}</p>
                 <p><strong>Last Trained:</strong> {lastTrained}</p>
               </div>
               

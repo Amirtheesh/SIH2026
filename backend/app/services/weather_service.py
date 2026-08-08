@@ -1,6 +1,8 @@
 import httpx
 import json
 import redis.asyncio as redis
+import random
+from datetime import datetime
 from typing import Dict, Any
 from app.core.config import settings
 
@@ -16,6 +18,22 @@ class WeatherService:
             "western": (19.0760, 72.8777),  # Mumbai
             "eastern": (22.5726, 88.3639),  # Kolkata
             "national": (20.5937, 78.9629)  # India center
+        }
+
+    def _get_mock_data(self, region_key: str) -> Dict[str, Any]:
+        """Generates realistic mock data based on hour and region profile."""
+        hour = datetime.now().hour
+        # Diurnal temp variation profile
+        base_temp = {"northern": 32.0, "southern": 28.0, "western": 30.0, "eastern": 29.0, "national": 29.5}.get(region_key, 25.0)
+        temp_factor = -5.0 if hour < 6 or hour > 20 else (2.0 if 10 <= hour <= 16 else 0.0)
+        
+        return {
+            "temperature": base_temp + temp_factor + random.uniform(-1.5, 1.5),
+            "humidity": 70.0 if hour > 18 else 50.0,
+            "rainfall": 0.0,
+            "wind_speed": 3.5,
+            "solar_radiation": 900.0 if 8 <= hour <= 17 else 0.0,
+            "aqi": 150.0 if region_key == "northern" else 85.0
         }
 
     async def get_current_weather(self, region: str) -> Dict[str, Any]:
@@ -50,23 +68,15 @@ class WeatherService:
                             "humidity": data["main"]["humidity"],
                             "rainfall": data.get("rain", {}).get("1h", 0.0),
                             "wind_speed": data["wind"]["speed"],
-                            "solar_radiation": 800.0, # Mocked as OpenWeather doesn't provide this on free tier
-                            "aqi": 110.0 # Mocked
+                            "solar_radiation": 800.0 if data["weather"][0]["main"] == "Clear" else 400.0,
+                            "aqi": 110.0
                         }
             except Exception as e:
                 print(f"Weather API fetch failed: {e}")
-                pass
                 
         # Fallback to realistic mock data if API fails or no key
         if not weather_data:
-            weather_data = {
-                "temperature": 32.5 if region_key == "southern" else 38.0,
-                "humidity": 65.0,
-                "rainfall": 0.0,
-                "wind_speed": 4.2,
-                "solar_radiation": 850.0,
-                "aqi": 150.0 if region_key == "northern" else 85.0
-            }
+            weather_data = self._get_mock_data(region_key)
             
         # Cache for 15 minutes
         await self.redis_client.setex(cache_key, 900, json.dumps(weather_data))

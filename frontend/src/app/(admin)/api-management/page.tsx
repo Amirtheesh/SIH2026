@@ -15,7 +15,7 @@ export default function ApiManagementPage() {
   ]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  if (user?.role !== "Admin") {
+  if (user?.role !== "admin") {
     return (
       <div className="flex h-screen items-center justify-center flex-col gap-4">
         <h2 className="text-2xl font-bold">Access Denied</h2>

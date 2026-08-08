@@ -10,7 +10,7 @@ from app.core import security
 from app.core.config import settings
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
-from app.schemas.token import Token
+from app.schemas.token import TokenWithRole
 
 router = APIRouter()
 
@@ -25,24 +25,24 @@ async def register(
     if user:
         raise HTTPException(
             status_code=400,
-            detail="The user with this username already exists in the system",
+            detail="The user with this email already exists in the system",
         )
-    
-    # Determine role based on email as requested (mocking for hackathon)
-    role = "admin" if "admin" in user_in.email.lower() else "operator"
 
+    # Role is always 'public' on self-registration.
+    # Admin/operator accounts must be seeded by an administrator.
+    # This prevents privilege escalation via registration.
     user = User(
         email=user_in.email,
         name=user_in.name,
         password_hash=security.get_password_hash(user_in.password),
-        role=role
+        role="public"
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
     return user
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=TokenWithRole)
 async def login(
     db: AsyncSession = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends()
@@ -50,13 +50,23 @@ async def login(
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalars().first()
     if not user or not security.verify_password(form_data.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
+    # Role is sourced from the DB record — the client never controls this.
+    access_token = security.create_access_token(
+        user.id, role=user.role, expires_delta=access_token_expires
+    )
+
     return {
-        "access_token": security.create_access_token(
-            user.id, expires_delta=access_token_expires
-        ),
+        "access_token": access_token,
         "token_type": "bearer",
+        "role": user.role,       # DB-authoritative role returned to frontend
+        "email": user.email,
+        "name": user.name,
     }

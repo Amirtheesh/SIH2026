@@ -54,7 +54,7 @@ export function AlertCard({ alert, onAcknowledge, onResolve }: AlertCardProps) {
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-bold text-sm uppercase tracking-wider">{alert.type}</span>
-                <span className="text-muted-foreground text-sm flex items-center">
+                <span className="text-muted-foreground text-sm flex items-center" suppressHydrationWarning>
                   <Clock className="h-3 w-3 mr-1" />
                   {new Date(alert.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
