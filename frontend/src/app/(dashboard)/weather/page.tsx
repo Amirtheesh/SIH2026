@@ -51,7 +51,7 @@ export default function WeatherAnalyticsPage() {
     <div className="flex-1 space-y-6 p-8 pt-6">
       <div className="flex items-center justify-between space-y-2">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Feature 3: Weather-Aware Forecast Correlation</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Weather-Aware Forecast Correlation</h2>
           <p className="text-muted-foreground text-sm">
             Live OpenWeather telemetry integrated into XGBoost feature pipeline (Temperature, Humidity, Wind, Rain, Solar)
           </p>

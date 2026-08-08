@@ -76,7 +76,7 @@ export default function WhatIfSimulatorPage() {
     <div className="flex-1 space-y-6 p-8 pt-6">
       <div className="flex items-center justify-between space-y-2">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Feature 7: Scenario-Based What-If Simulator</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Scenario-Based What-If Simulator</h2>
           <p className="text-muted-foreground text-sm">Run live XGBoost model inference under extreme weather or grid stress scenarios</p>
         </div>
       </div>
