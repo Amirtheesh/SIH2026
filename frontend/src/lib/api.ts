@@ -334,7 +334,15 @@ export interface DateLookupResponse {
 
 export async function lookupDate(dateStr: string, region = 'national'): Promise<DateLookupResponse> {
   const formattedRegion = region.toLowerCase().replace('-', '_');
-  return fetchJson<DateLookupResponse>(`/date-lookup?date=${dateStr}&region=${formattedRegion}`);
+  const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace('/api/v1', '') || 'http://localhost:8000';
+  const res = await fetch(`${apiBase}/api/date-lookup?date=${dateStr}&region=${formattedRegion}`, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`API Error ${res.status}: ${errorText}`);
+  }
+  return res.json();
 }
 
 
