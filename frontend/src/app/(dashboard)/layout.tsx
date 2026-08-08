@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, LayoutDashboard, LineChart, Map, CloudRain, Bell, Sliders, Calendar, Settings, ShieldAlert, LogOut } from "lucide-react";
 import { useAppStore } from "@/store/useAppStore";
 import { motion, AnimatePresence } from "framer-motion";
 
-const baseNavigation = [
+const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Forecasts', href: '/forecast', icon: LineChart },
   { name: 'Peak Analytics', href: '/peak-analytics', icon: Activity },
@@ -16,6 +15,7 @@ const baseNavigation = [
   { name: 'What-If Simulator', href: '/what-if', icon: Sliders },
   { name: 'Alerts', href: '/alerts', icon: Bell },
   { name: 'Events Impact', href: '/events', icon: Calendar },
+  { name: 'Admin', href: '/admin', icon: ShieldAlert },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
@@ -23,11 +23,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const logout = useAppStore((state) => state.logout);
   const user = useAppStore((state) => state.user);
-  const isAdmin = useAppStore((state) => state.isAdmin);
-
-  // Defer role-dependent rendering until after hydration to prevent SSR mismatch
-  const [hasMounted, setHasMounted] = useState(false);
-  useEffect(() => { setHasMounted(true); }, []);
 
   const ROLE_BADGE: Record<string, { label: string; class: string }> = {
     admin: { label: "Admin", class: "bg-amber-500/15 text-amber-400 border-amber-500/25" },
@@ -35,13 +30,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     public: { label: "Public", class: "bg-blue-500/15 text-blue-400 border-blue-500/25" },
   };
   const roleBadge = user?.role ? ROLE_BADGE[user.role] ?? ROLE_BADGE.public : null;
-
-  // Navigation — Admin link only shown to admins after client mount
-  const navigation = [
-    ...baseNavigation.slice(0, 8), // Dashboard through Events Impact
-    ...(hasMounted && isAdmin() ? [{ name: 'Admin', href: '/admin', icon: ShieldAlert }] : []),
-    ...baseNavigation.slice(8),    // Settings
-  ];
 
   return (
     <div className="flex min-h-screen">
